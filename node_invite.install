@@ -1,0 +1,207 @@
+<?php
+
+/**
+ * @file
+ * Node invite installation.
+ */
+
+function node_invite_schema() {
+  $schema['node_invite_settings'] = array(
+    'description' => t('Stores per-node settings for node_invite module'),
+    'fields' => array(
+      'nid' => array(
+        'description' => t('Foreign key to node.nid'),
+        'type'    => 'int',
+        'unsigned'  => TRUE,
+        'not null'  => TRUE,
+      ),
+      'invites_enabled' => array(
+        'description' => t('Per-node override for invites'),
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'open' => array(
+        'description' => t('is this an open invitation'),
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'subject' => array(
+        'description' => t('per-node override for invite subject'),
+        'type' => 'varchar',
+        'length' => 255,
+      ),
+      'message' => array(
+        'description' => t('per-node override for invite message'),
+        'type' => 'text',
+      ),
+    ),
+    'primary key' => array('nid'),
+  );
+
+  $schema['node_invites'] = array(
+    'description' => t('Stores the history of node invites'),
+    'fields'  => array(
+      'iid' => array(
+        'description' => t('Primary key'),
+        'type'    => 'serial',
+        'unsigned'  => TRUE,
+        'not null'  => TRUE,
+      ),
+      'nid' => array(
+        'description' => t('Foreign key to node.nid'),
+        'type'    => 'int',
+        'unsigned'  => TRUE,
+        'not null'  => TRUE,
+      ),
+      'uid_inviter'   => array(
+        'description' => t('Foreign key to users.uid'),
+        'type'    => 'int',
+        'unsigned'  => TRUE,
+        'not null'  => TRUE,
+      ),
+      'inviter_custom_name' => array(
+        'description' => t('This records the your_name field if used'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'inviter_custom_email' => array(
+        'description' => t('This records the your_email field if used'),
+        'type'    => 'varchar',
+        'length'  => 255,
+        'default' => '',
+      ),
+      'inviter_custom_name' => array(
+        'description' => t('This records the your_name field if used'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'inviter_custom_name' => array(
+        'description' => t('This records the your_name field if used'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'email_invitee'   => array(
+        'description' => t('Recipient'),
+        'type'    => 'varchar',
+        'length'  => 255,
+      ),
+      'name_invitee'    => array(
+        'description' => t('Recipient name'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'company_invitee'    => array(
+        'description' => t('Recipient company'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'title_invitee'    => array(
+        'description' => t('Recipient title'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'phone_number_invitee'    => array(
+        'description' => t('Recipient phone number'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'uid_invitee'    => array(
+        'description' => t('The UID of the recipient'),
+        'type'    => 'int',
+        'unsigned'  => TRUE,
+        'default' => 0,
+      ),
+      'status'    => array(
+        'description' => t('Description on invite status'),
+        'type'    => 'varchar',
+        'length'  => 50,
+      ),
+      'sent'      => array(
+        'description' => t('Boolean flag if invite has been sent'),
+        'type'    => 'int',
+        'unsigned'  => TRUE,
+        'default' => 0,
+      ),
+      'acted_upon'    => array(
+        'description' => t('Boolean flag if invite has responded to'),
+        'type'    => 'int',
+        'unsigned'  => TRUE,
+        'not null'  => TRUE,
+        'default' => 0,
+      ),
+      'notes_invitee'   => array(
+        'description' => t('Notes by invitee'),
+        'type'    => 'text',
+      ),
+      'notes_inviter'   => array(
+        'description' => t('Notes by invitee'),
+        'type'    => 'text',
+      ),
+      'hash'            => array(
+        'description' => t('A unique hash associated with each invite'),
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+      ),
+      'personal_message' => array(
+        'description' => t('personal message sent out with the invite'),
+        'type' => 'text',
+      ),
+    ),
+    'primary key' => array('iid'),
+  );
+
+  return $schema;
+}
+
+function node_invite_uninstall() {
+  // General module settings
+  variable_del('node_invite_node_types');
+  variable_del('node_invite_default');
+  variable_del('node_invite_set_email');
+  variable_del('node_invite_hash_url');
+  variable_del('node_invite_display');
+  variable_del('node_invite_set_email');
+
+  // User invite settings
+  variable_del('node_invite_user_limit');
+  variable_del('node_invite_disable_email');
+  variable_del('node_invite_disable_users');
+  variable_del('node_invite_sync_users');
+  variable_del('node_invite_userreference');
+  variable_del('node_invite_referenceable_roles');
+  variable_del('node_invite_referenceable_status');
+  variable_del('node_invite_advanced_view_args');
+
+  // RSVP page settings
+  variable_del('node_invite_rsvp_show_comments');
+  variable_del('node_invite_rsvp_email');
+  variable_del('node_invite_rsvp_page_submit_pretext');
+  variable_del('node_invite_rsvp_page_title');
+  variable_del('node_invite_rsvp_page_intro');
+
+  // Invite message settings
+  variable_del('node_invite_message_default');
+  variable_del('node_invite_subject_default');
+
+  // Notification setings
+  variable_del('node_invite_nots_rsvps');
+  variable_del('node_invite_nots_admin');
+  variable_del('node_invite_notify_site_admin_yes_subject');
+  variable_del('node_invite_notify_site_admin_yes');
+  variable_del('node_invite_notify_site_admin_all_subject');
+  variable_del('node_invite_notify_site_admin_all');
+  variable_del('node_invite_notify_invitee_confirm_subject');
+  variable_del('node_invite_notify_invitee_confirm');
+  variable_del('node_invite_notify_inviter_notify_subject');
+  variable_del('node_invite_notify_inviter_notify');
+}

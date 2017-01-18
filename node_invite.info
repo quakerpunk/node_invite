@@ -1,0 +1,9 @@
+name = Node Invite
+description = Provides an invite/acceptance framework like RSVP, but with some added features.
+core = 7.x
+dependencies[] = token
+
+files[] = node_invite_invitee_list_handler_field.inc
+files[] = node_invite.rsvp.inc
+files[] = node_invite.send.inc
+;files[] = node_invite.settings.inc

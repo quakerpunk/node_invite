@@ -1,0 +1,1964 @@
+<?php
+/**
+ * @file
+ * Provides the overall functionality for the node_invite module.
+ * See also node_invite.rsvp.inc and node_invite.send.inc
+ */
+module_load_include('inc', 'node_invite', 'node_invite.rsvp');
+module_load_include('inc', 'node_invite', 'node_invite.settings');
+
+/**
+ * Implementation of hook_init
+ */
+function node_invite_init() {
+  // Load the defaults and constants used throughout the module
+  module_load_include('inc', 'node_invite', 'node_invite.settings');
+}
+
+/**
+ * Implementation of hook_action_info().
+ */
+function node_invite_action_info() {
+  return array(
+    'node_invite_admin_send' => array(
+      'type' => 'node',
+      'label' => t('Send/Resend invite(s)'),
+      'configurable' => false,
+      'triggers' => array('any'),
+      'aggregate' => true,
+      'pass rows' => true,
+    ),
+    'node_invite_admin_revoke' => array(
+      'type' => 'node',
+      'label' => t('Revoke invite(s)'),
+      'configurable' => false,
+      'triggers' => array('any'),
+      'aggregate' => true,
+      'pass rows' => true,
+    ),
+    'node_invite_admin_delete' => array(
+      'type' => 'node',
+      'label' => t('Delete invite(s)'),
+      'configurable' => false,
+      'triggers' => array('any'),
+      'aggregate' => true,
+      'pass rows' => true,
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_help().
+ */
+function node_invite_help($path, $arg) {
+  $output = '';
+  switch ($path) {
+    case 'admin/help/node_invite':
+      $output .= '<p>' . t('Node Invite provides a means to invite people to nodes. Customized email message is token enabled.') . '</p>';
+      $output .= '<p>' . t('Here are tokens you can use:') . '</p>';
+      $output .= theme('token_tree', array('token_types' => array('node')));
+      break;
+    case 'admin/config/content/node_invite':
+      $output .= '<p>' . t('Node invite allows you to invite people to nodes. The email they receive is token-enabled.') . '</p>';
+      break;
+  }
+  return $output;
+}
+
+/**
+ * Implementation of hook_permission().
+ */
+function node_invite_permission() {
+  return array(
+    'admin node invite settings' => array(
+      'title' => t('Administer node invite settings'),
+      'description' => t('Allows control over node invite settings'),
+    ),
+    'manage all invites' => array(
+      'title' => t('Manage all invites'),
+      'description' => t('Allows users to manage all invites'),
+    ),
+    'manage own invites' => array(
+      'title' => t('Manage own invites'),
+      'description' => t('Allows users to manage only their own invites'),
+    ),
+    'invite users to invite-enabled nodes' => array(
+      'title' => t('Invite users to invite-enabled nodes'),
+      'description' => t('Allows users to be invited to invite-enabled nodes'),
+    ),
+    'view invitee lists' => array(
+      'title' => t('View invitee lists'),
+      'description' => t('Allows users to view invitee lists'),
+    ),
+    'respond to invites' => array(
+      'title' => t('Respond to invites'),
+      'description' => t('Allows users to respond to invites'),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function node_invite_theme() {
+  return array(
+    'node_invite_view_field_invitees' => array(
+      'variables' => array('nid' => NULL, 'invites' => array()),
+    ),
+    'node_invite_list_invites' => array(
+      'variables' => array('sql' => NULL, 'values' => NULL, 'fields' => NULL, 'limit' => NULL),
+    ),
+    'node_invite_list_invites_empty' => array(
+      'variables' => array(),
+    ),
+    'node_invite_view' => array(
+      'variables' => array('node_invite' => NULL),
+    ),
+  );
+}
+
+/**
+ * Custom theme handler for invite operations.
+ *
+ * @param $op
+ *  The operation being requested.
+ * @param $node
+ *  The node being acted upon.
+ *
+ * @return
+ * Boolean TRUE or FALSE.
+ */
+function _ni_admin_theme() {
+  global $user;
+
+  if (variable_get('node_admin_theme', 0) && variable_get('admin_theme', '0')) {
+    global $custom_theme;
+    $custom_theme = variable_get('admin_theme', '0');
+  }
+}
+
+/**
+ * Implementation hook_views_api
+ */
+function node_invite_views_api() {
+  return array(
+    'api' => 3,
+  );
+}
+
+/**
+ * Implementation of hook_menu().
+ */
+function node_invite_menu() {
+  $items = array();
+
+  $items['admin/config/content/node_invite'] = array(
+    'title' => 'Node invite',
+    'description' => 'Node Invite module is similar to RSVP. Invite people to nodes, manage your invites, etc.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('node_invite_admin_settings_form'),
+    'access arguments' => array('admin node invite settings'),
+    'file' => 'node_invite.admin.inc',
+  );
+  $items['admin/config/content/node_invite/settings'] = array(
+    'title' => 'Settings',
+    'weight' => 0,
+    'type'  => MENU_DEFAULT_LOCAL_TASK,
+  );
+  $items['admin/config/content/node_invite/notifications'] = array(
+    'title' => 'Notifications',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('node_invite_notifications_form'),
+    'access arguments' => array('admin node invite settings'),
+    'file' => 'node_invite.admin.inc',
+    'weight' => 1,
+    'type' => MENU_LOCAL_TASK,
+  );
+  $items['admin/config/content/node_invite/manage'] = array(
+    'title' => 'Manage invites',
+    'page callback' => 'node_invite_manage_page',
+    'access arguments' => array('manage all invites'),
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'node_invite.admin.inc',
+    'weight' => 2,
+  );
+  if (variable_get('node_invite_display', 'link') == 'tab') {
+    $items['node/%node/invite'] = array(
+      'title' => 'Invite people',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('node_invite_add_form', 1),
+      'access callback' => 'node_invite_invites_access',
+      'access arguments' => array(1, 'tab'),
+      'file' => 'node_invite.send.inc',
+      'weight' => 2,
+      'type' => MENU_LOCAL_TASK,
+    );
+  }
+  else {
+    $items['node_invite/invite/%node'] = array(
+      'title' => 'Invite',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('node_invite_send', 2),
+      'access callback' => 'node_invite_invites_access',
+      'access arguments' => array(2, 'link'),
+      'file' => 'node_invite.send.inc',
+      'type' => MENU_CALLBACK,
+    );
+  }
+
+  $items['node_invite/find_invite/%node'] = array(
+    'title' => 'Find invite',
+    'page callback' => 'node_invite_find_invite',
+    'page arguments' => array(2),
+    'access callback' => 'node_invite_rsvp_access',
+    'access arguments' => array(2),
+    'file' => 'node_invite.rsvp.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['node_invite/clear_rsvp_session/%node'] = array(
+    'title' => 'Clear RSVP session',
+    'page callback' => 'node_invite_clear_rsvp_session',
+    'page arguments' => array(2),
+    'access callback' => TRUE,
+    'file' => 'node_invite.rsvp.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['node_invite/rsvp/%node/%node_invite'] = array(
+    'title arguments' => array(2, 3),
+    'title callback' => 'node_invite_rsvp_title',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('node_invite_rsvp', 2, 3),
+    'access arguments' => array('respond to invites'),
+    'file' => 'node_invite.rsvp.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['node_invite/rsvp_new/%node'] = array(
+    'title' => 'Your RSVP',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('node_invite_rsvp_new', 2),
+    'access callback' => 'node_invite_rsvp_access',
+    'access arguments' => array(2),
+    'file' => 'node_invite.rsvp.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['node_invite/revoke/%node_invite'] = array(
+    'title' => 'Revoke invite',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('node_invite_revoke', 2),
+    'access callback' => 'node_invite_can_manage_invite',
+    'access arguments' => array(2),
+    'file' => 'node_invite.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['node_invite/resend/%node_invite'] = array(
+    'title' => 'Resend invite',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('node_invite_resend', 2),
+    'access callback' => 'node_invite_can_manage_invite',
+    'access arguments' => array(2),
+    'file' => 'node_invite.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['node_invite/reinstate/%node_invite'] = array(
+    'title' => 'Reinstate invitation',
+    'page callback' => 'node_invite_reinstate',
+    'page arguments' => array(2),
+    'file' => 'node_invite.admin.inc',
+    'access callback' => 'node_invite_can_manage_invite',
+    'access arguments' => array(2),
+    'type' => MENU_CALLBACK,
+  );
+  $items['node_invite/view/%node_invite'] = array(
+    'title' => 'View invitation',
+    'page callback' => 'theme',
+    'page arguments' => array('node_invite_view', 2),
+    'file' => 'node_invite.admin.inc',
+    'access callback' => 'node_invite_can_manage_invite',
+    'access arguments' => array(2),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['user/%user/invites'] = array(
+    'title' => 'My invites',
+    'page callback' => 'node_invite_list_invites_callback',
+    'page arguments' => array(1),
+    'access arguments' => array('manage own invites'),
+    'weight' => 2,
+    'type' => MENU_LOCAL_TASK,
+  );
+  /*
+   * Replaced with a view so that we can use filters and data export
+
+
+  $items['node/%node/manage_invites'] = array(
+    'title' => 'Manage invites',
+    'page callback' => 'node_invite_list_invites_callback',
+    'page arguments' => array(NULL, 1),
+    'access callback' => 'node_invite_manage_invites_access',
+    'access arguments' => array(1),
+    'weight' => 3,
+    'type' => MENU_LOCAL_TASK,
+  );*/
+
+  $items['node_invite/user_autocomplete'] = array(
+    'title' => 'User autocomplete',
+    'page callback' => '_node_invite_user_autocomplete',
+    'access arguments' => array('access user profiles'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * The title callback for the rsvp page
+ */
+function node_invite_rsvp_title($node, $invite) {
+  node_invite_specific_info($invite, $node);
+  $page_title = variable_get('node_invite_rsvp_page_title', NODE_INVITE_RSVP_PAGE_TITLE);
+
+  // There appears to be an issue when the [title] token is used that it can't
+  // be properly replaced with token_replace in the title menu callback.
+  $page_title = str_replace('[node:title]', $node->title, $page_title);
+  //$page_title = token_replace($page_title, 'node', $node);
+  $page_title = token_replace($page_title, array('node' => $node));
+  return t($page_title);
+}
+
+/**
+ * Menu access callback for determining if the current user can manage
+ * the given invite.
+ */
+function node_invite_can_manage_invite($invite) {
+  global $user;
+
+  if (user_access('manage all invites') ||
+    ($invite->uid_inviter == $user->uid && user_access('manage own invites'))) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Menu access callback for the manage invites tab.
+ */
+function node_invite_manage_invites_access($node) {
+  if (user_access('manage own invites') && (_ni_node_is_enabled($node) || node_invite_load_invites_by_nid($node->nid))) {
+    return TRUE;
+  }
+  return FALSE;
+}
+/**
+ * Menu access callback for the manage invites tab.
+ */
+function node_invite_invites_access($node, $type = NULL) {
+  if (user_access('invite users to invite-enabled nodes') && _node_invite_type_is_allowed($node->type) && _ni_node_is_enabled($node)) {
+    if (!isset($type) || ($type == variable_get('node_invite_display', 'link'))) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Menu access callback for the rsvp link on invite node.
+ */
+function node_invite_rsvp_access($node) {
+  global $user;
+  if (user_access('respond to invites') && _node_invite_type_is_allowed($node->type) && _ni_node_is_enabled($node)) {
+    if ($node->node_invite_settings['open']) {
+      return TRUE;
+    }
+    else {
+      // Try and find an invite for this user. Note that people who were
+      // invited by email only will not be able to see this link.
+      $invites = node_invite_user_invites($user->uid);
+      foreach ($invites as $invite) {
+        if ($invite->nid == $node->nid) {
+          return TRUE;
+        }
+      }
+    }
+  }
+  return FALSE;
+}
+
+
+/**
+ * Load an invite.
+ */
+function node_invite_load($invite_id, $reset = NULL) {
+  static $invite_cache = array();
+  if ($reset) {
+    $invite_cache = array();
+  }
+
+  if (!isset($invite_cache[$invite_id])) {
+    // The id can be either a hash or an iid... figure it out
+    if (is_numeric($invite_id)) {
+      $where = "ni.iid = :invite_id";
+    }
+    else {
+      $where = "ni.hash = :invite_id";
+    }
+    $invite = db_query("SELECT ni.*, u.mail, u.name FROM {node_invites} AS ni LEFT JOIN {users} AS u ON ni.uid_inviter = u.uid WHERE $where", array(':invite_id' => $invite_id))->fetch();
+    // Load the settings for this invite
+    if (!$invite) {
+      return false;
+    }
+
+    $invite->settings = db_query("SELECT * FROM {node_invite_settings} WHERE nid = :nid", array(':nid' => $invite->nid))->fetchAssoc();
+    $invite_cache[$invite_id] = $invite;
+  }
+  return $invite_cache[$invite_id];
+}
+
+/**
+ * Implementation of hook_link().
+ */
+function node_invite_link($type, $node = NULL, $teaser = FALSE) {
+  global $user;
+  $links = array();
+
+  if ($type == 'node' && _node_invite_type_is_allowed($node->type) && _ni_node_is_enabled($node)) {
+    if (user_access('invite users to invite-enabled nodes') && variable_get('node_invite_display', 'link') == 'link') {
+      $links['node_invite'] = array(
+        'title' => t('Invite people to this @type', array('@type' => $node->type)),
+        'href' => "node_invite/invite/$node->nid",
+      );
+    }
+    if ($node->node_invite_settings['open'] && variable_get('node_invite_rsvp_display', 'link') == 'link') {
+      $links['node_invite_rsvp'] = array(
+        'title' => t('RSVP to this @type', array('@type' => $node->type)),
+        'href' => "node_invite/find_invite/$node->nid",
+      );
+    }
+  }
+
+  return $links;
+}
+
+/**
+ * Implementation of hook_user().
+ *
+ * Update invite email addresses if the user changes their own email address.
+ */
+function node_invite_user($op, &$edit, &$account, $category = NULL) {
+  if ($op == 'update') {
+    if (variable_get('node_invite_sync_users', 0) && $edit['mail'] != $account->mail) {
+      db_update('node_invites')
+        ->fields(array('email_invitee' => $edit['mail']))
+        ->condition('uid_invitee', $account->uid)
+        ->execute();
+    }
+  }
+}
+
+/**
+ * Implementation of hook_mail().
+ */
+function node_invite_mail($key, &$message, $params) {
+  $message['headers']['Content-Type'] = 'text/html; charset=UTF-8; format=flowed';
+  $message['subject'] = $params['subject'];
+  $message['body'][] = $params['body'];
+
+  // Replace from address if a replacement is set.
+  if ($params['from'] != $message['from']) {
+    //$message['headers']['Reply-To'] = $message['from'];
+    $message['headers']['Reply-To'] = 'Example Inc. <no-reply@example.com>';
+    $message['headers']['From'] = $params['from'];
+    $message['from'] = $params['from'];
+  }
+}
+
+/**
+ * Implementation of hook_token_info().
+ */
+function node_invite_token_info() {
+  $info = array();
+  $info['types']['node_invite'] = array(
+    'name' => t('Node Invite settings'),
+    'description' => t('Tokens related to Node Invite information.'),
+    'needs-data' => 'node',
+  );
+
+  /**
+  $tokens['comment']['comment-body'] = t('The formatted content of the comment itself.');
+  $comment['body'] = array(
+    'name' => t("Content"),
+    'description' => t("The formatted content of the comment itself."),
+  );
+  **/
+
+  $info['tokens']['node_invite']['inviter-name'] = array(
+    'name' => t('Inviter Name'),
+    'description' => t('The username of the person currently logged in (and thus sending the invite). This will not work as a page-title token since the person rendering the page title will be logged in as someone different (or anonymous).'),
+    'type' => 'user',
+  );
+  $info['tokens']['node_invite']['inviter-mail'] = array(
+    'name' => t('Inviter\'s Email Address'),
+    'description' => t('The email address of the person currently logged in (and thus sending the invite).This will not work as a page-title token since the person rendering the page title will be logged in as someone different (or anonymous).'),
+    'type' => 'user',
+  );
+  $info['tokens']['node_invite']['inviter-rsvp-url'] = array(
+    'name' => t('RSVP Form URL'),
+    'description' => t('This is the URL of the RSVP form. Send users here to confirm or deny attendance.'),
+  );
+  $info['tokens']['node_invite']['inviter-node-url'] = array(
+    'name' => t('Inviter Node URL'),
+    'description' => t('This is the URL of the node to which they are being invited. Send them here "for more details."'),
+    'type' => 'node',
+  );
+  $info['tokens']['node_invite']['node-invite-recip-mail'] = array(
+    'name' => t('Recipient Email Address'),
+    'description' => t('The email of the person receiving the invite'),
+  );
+  $info['tokens']['node_invite']['node-invite-recip-name'] = array(
+    'name' => t('Recipient Name'),
+    'description' => t('The name of the person receiving the invite'),
+  );
+  $info['tokens']['node_invite']['node-invite-iid'] = array(
+    'name' => t('Invite ID'),
+    'description' => t('The invite_id (unique identifier) of the invite being sent'),
+  );
+  $info['tokens']['node_invite']['node-invite-personal-message'] = array(
+    'name' => t('Personal Message'),
+    'description' => t('The personal message added to the invite being sent'),
+  );
+  $info['tokens']['node_invite']['node-invite-status'] = array(
+    'name' => t('Invite Status'),
+    'description' => t('The response status of the invite.'),
+  );
+
+  return $info;
+}
+
+/**
+ * Implementation of hook_tokens().
+ */
+function node_invite_tokens($type, $tokens, array $data = array(), array $options = array()) {
+  $replacements = array();
+
+  // We'll need the user's info as well
+  global $user;
+  if ($type == 'node_invite' && !empty($data['node'])) {
+    $node = $data['node'];
+
+    foreach($tokens as $name => $original) {
+      switch($name) {
+        case 'inviter-name':
+          if (isset($node->invite_specific_info)) {
+            $replacements[$original] = $node->invite_specific_info['inviter-name'];
+          } else {
+            $replacements[$original] = $user->name;
+          }
+          break;
+
+        case 'inviter-mail':
+          if (isset($node->invite_specific_info)) {
+            $replacements[$original] = $node->invite_specific_info['inviter-mail'];
+          } else {
+            $replacements[$original] = $user->mail;
+          }
+          break;
+
+        case 'inviter-rsvp-url':
+          $replacements[$original] = url('node_invite/invite/' . $node->nid, array('absolute' => TRUE));
+          break;
+
+        case 'inviter-node-url':
+          $replacements[$original] = url('node/' . $node->nid, array('absolute' => TRUE));
+          break;
+
+        case 'node-invite-iid':
+          if (isset($node->invite_specific_info)) {
+            $replacements[$original] = $node->invite_specific_info['node-invite-iid'];
+          }
+          break;
+
+        case 'node-invite-recip-name':
+          if (isset($node->invite_specific_info)) {
+            $replacements[$original] = $node->invite_specific_info['node-invite-recip-name'];
+          }
+          break;
+
+        case 'node-invite-recip-mail':
+          if (isset($node->invite_specific_info)) {
+            $replacements[$original] = $node->invite_specific_info['node-invite-recip-mail'];
+          }
+          break;
+
+        case 'node-invite-personal-message':
+          if (isset($node->invite_specific_info)) {
+            $replacements[$original] = str_replace("\n", "<br />\n", $node->invite_specific_info['node-invite-personal-message']);
+          }
+          break;
+
+        case 'node-invite-status':
+          if (isset($node->invite_specific_info)) {
+            $replacements[$original] = $node->invite_specific_info['node-invite-status'];
+          }
+          break;
+      }
+    }
+  }
+
+  return $replacements;
+}
+
+/**
+ * Implementation of hook_content_extra_fields().
+ */
+function node_invite_content_extra_fields($type_name) {
+  $extra = array();
+  if (_node_invite_type_is_allowed($type_name)) {
+    $extra['node_invite_group'] = array(
+      'label' => t('Node invite settings'),
+      'description' => t('Node invite module form.'),
+      'weight' => 10,
+    );
+  }
+  return $extra;
+}
+
+/**
+ * Implementation of hook_block().
+ */
+function node_invite_block($op = 'list', $delta = 0, $edit = array()) {
+  // The blocks here can only be used on node invite enabled nodes and
+  // node_invite pages.
+  if ($op == 'list') {
+    $blocks = array();
+    $blocks[0] = array(
+      'info'  => t('Node invite - invite list'),
+    );
+    $blocks[1] = array(
+      'info'  => t('Node invite - attending'),
+    );
+    $blocks[2] = array(
+      'info'  => t('Node invite - maybe attending'),
+    );
+    $blocks[3] = array(
+      'info'  => t('Node invite - not attending'),
+    );
+    $blocks[4] = array(
+      'info'  => t('Node invite - no response'),
+    );
+    return $blocks;
+  }
+  elseif ($op == 'view') {
+
+    // Figure out which node we're viewing.
+    $path = $_GET['q'];
+    $matches = array();
+    if (preg_match('/node\/([0-9]+)/', $path, $matches)) {
+      $nid = $matches[1];
+    }
+    elseif (preg_match('/node_invite\/[a-zA-Z]+\/([0-9]+)/', $path, $matches)) {
+      $nid = $matches[1];
+    }
+    else {
+      return;
+    }
+
+    // Ensure that the permissions are adequate to display a block on
+    // the specified node.
+    $node = node_load($nid);
+    if (!(_ni_node_is_enabled($node)
+        && _node_invite_type_is_allowed($node->type)
+        && user_access('view invitee lists'))) {
+      return;
+    }
+
+    switch ($delta) {
+      case 0:
+        $invites = node_invite_load_invites_by_nid($nid);
+        $subject = t('Invite List');
+        break;
+      case 1:
+        $invites = node_invite_load_invites_by_nid($nid, NODE_INVITE_RESPONSE_YES);
+        $subject = t('Attending');
+        break;
+      case 2:
+        $invites = node_invite_load_invites_by_nid($nid, NODE_INVITE_RESPONSE_MAYBE);
+        $subject = t('Maybe Attending');
+        break;
+      case 3:
+        $invites = node_invite_load_invites_by_nid($nid, NODE_INVITE_RESPONSE_NO);
+        $subject = t('Not Attending');
+        break;
+      case 4:
+        $invites = node_invite_load_invites_by_nid($nid, NODE_INVITE_NEW);
+        $subject = t('No Response');
+        break;
+    }
+    $block = array(
+      'subject' => $subject,
+      'content' => theme('node_invite_view_field_invitees', $nid, $invites),
+    );
+    return $block;
+  }
+}
+
+/**
+ * Menu callback for the user and node invite lists.
+ */
+function node_invite_list_invites_callback($account = NULL, $node = NULL) {
+  $filters = array();
+  $fields = NULL;
+  if (isset($account)) {
+    $filters['node_invites.uid_inviter'] = $account->uid;
+  }
+  if (isset($node)) {
+    $filters['node.nid'] = $node->nid;
+    $fields = array(
+      'email_invitee' => t('Sent to'),
+      'users.name' => t('Sent by'),
+      'sent' => t('Invite Sent'),
+      'status' => t('Status'),
+      'acted_upon' => t('Acted Upon'),
+    );
+
+  }
+  return node_invite_list_invites($filters, $fields);
+}
+
+/**
+ * Return a list of invites in a themed table
+ *
+ * @param $filters - An array of filters to apply to the query. For example:
+ *   array('node_invites.uid_inviter' => 1, 'node.nid' => 13);
+ *   The filters can be any of the fields in the node_invites table, the node
+ *   table or the user table.
+ * @param $fields - An array of fields and column titles to display
+ * @return the themed table of invites
+ */
+function node_invite_list_invites($filters = NULL, $fields = NULL, $limit = 50) {
+  if (!isset($fields) || empty($fields)) {
+    $fields = array(
+      'email_invitee' => t('Sent to'),
+      'sent' => t('Invite Sent'),
+      'status' => t('Status'),
+      'acted_upon' => t('Acted Upon'),
+    );
+  }
+
+  $default_fields = array('iid', 'nid', 'uid_inviter', 'notes_invitee', 'notes_inviter');
+
+  //On the off chance this isn't set properly.
+  $limit = (empty($limit)) ? 50 : $limit;
+
+  //Build the query
+  $field_keys = array_keys($fields);
+  $selected_fields = array_merge($default_fields, $field_keys);
+  foreach($selected_fields as $id => $sField) {
+    if ($sField == 'node.title' || $sField == 'users.name' ) {
+      unset($selected_fields[$id]);
+    }
+  }
+
+  $query = db_select('node_invites', 'ni')->extend('PagerDefault')->limit($limit);
+  $query = $query->extend('TableSort');
+  $query->join('node', 'node', 'ni.nid = node.nid');
+  $query->join('users', 'users', 'users.uid = ni.uid_inviter');
+  $query->fields('ni', $selected_fields);
+  $query->fields('node', array('title'));
+  $query->fields('users', array('name'));
+
+  //Build the WHERE
+  if (isset($filters) && is_array($filters)) {
+    foreach ($filters as $field => $value) {
+      $query->condition($field, $value);
+    }
+  }
+
+  $testVar = $query->__toString();
+
+  return theme('node_invite_list_invites', array('query' => $query, 'fields' => $fields, 'limit' => $limit));
+}
+
+/**
+ * Implementation of hook_node_load
+ */
+function node_invite_node_load($nodes, $types) {
+  // We need node_invites_enabled here as well as settings because sometimes
+  // the node will be set has enabled, but that node type won't be available
+  // for using with node_invite.
+  foreach ($nodes as $node) {
+    $node->node_invites_enabled = _ni_node_is_enabled($node);
+    $result = db_query("SELECT * FROM {node_invite_settings} WHERE nid = :nid", array(':nid' => $node->nid));
+    $settings = $result->fetchAssoc();
+    $node->node_invite_settings = $settings;
+  }
+}
+
+/**
+ * Implementation of hook_node_update
+ */
+function node_invite_node_update($node) {
+  _update_node_settings($node);
+}
+
+/**
+ * Implementation of hook_node_insert
+ */
+function node_invite_node_insert($node) {
+  _update_node_settings($node);
+}
+
+/**
+ * Implementation of hook_node_delete
+ */
+function node_invite_node_delete($node) {
+  $query = db_delete('node_invite_settings')
+    ->condition('nid', $node->nid)
+    ->execute();
+}
+
+/**
+ * Implementation of hook_node_view
+ */
+function node_invite_node_view($node, $view_mode, $langcode) {
+  // @TODO: The variable node_invite_form_on_teasers is not yet available
+  // on the admin interface and needs to be set manually because there's no
+  // particular reason to not allow the form on the teaser view. Note that
+  // this variable is only for the RSVP form, not the invite form.
+  // What would be ideal is if node_invite acted as almost a cck field
+  // that could be attached to any node type. D7 potential?
+  $invite_form = '';
+  $rsvp_form = '';
+  if ($view_mode != 'teaser' || variable_get('node_invite_rsvp_form_on_teasers', FALSE)) {
+    if (node_invite_invites_access($node) && variable_get('node_invite_display', 'link') == 'form' && $view_mode != 'teaser') {
+      module_load_include('inc', 'node_invite', 'node_invite.send');
+      $invite_form = drupal_get_form('node_invite_send', $node, TRUE);
+    }
+    if (_ni_node_is_enabled($node) && variable_get('node_invite_rsvp_display', 'link') == 'form') {
+      module_load_include('inc', 'node_invite', 'node_invite.rsvp');
+      $invite = node_invite_find_invite($node, FALSE);
+      if ($invite) {
+        $rsvp_form = drupal_get_form('node_invite_rsvp', $node, $invite, TRUE);
+      }
+      elseif ($node->node_invite_settings['open']) {
+        $rsvp_form = drupal_get_form('node_invite_rsvp_new', $node, TRUE);
+      }
+    }
+
+    if ($invite_form || $rsvp_form) {
+      $node->content['node_invite'] = array('#weight' => 10);
+      $node->content['node_invite']['invite'] = array('#markup' => drupal_render($invite_form));
+      $node->content['node_invite']['rsvp'] = array('#markup' => drupal_render($rsvp_form));
+    }
+  }
+}
+
+/**
+ * Helper functions for node operations
+ */
+function _update_node_settings($node) {
+  if (!isset($node->node_invites_enabled)) {
+    $node->node_invites_enabled = _ni_node_is_enabled($node);
+  }
+
+  //In Drupal 6, it seems converting bools to ints was done on the fly
+  //This is not the case with the dynamic query, so we need to cast it.
+  if (is_bool($node->node_invites_enabled)) {
+    $node->node_invites_enabled = (int) $node->node_invites_enabled;
+  }
+
+  if (!isset($node->node_invites_open)) {
+    $node->node_invites_open = 0;
+  }
+
+  // Replace any existing data with the content of the submitted node
+  $sth = db_delete('node_invite_settings')
+    ->condition('nid', $node->nid)
+    ->execute();
+  $sth = db_insert('node_invite_settings')
+    ->fields(array(
+      'nid' => $node->nid,
+      'invites_enabled' => $node->node_invites_enabled,
+      'open' => $node->node_invites_open,
+      'subject' => $node->node_invite_subject_override,
+      'message' => $node->node_invite_message_override
+    ))
+    ->execute();
+}
+
+/**
+ * Provides the invite send form.
+ */
+function node_invite_admin_send_form($form, &$form_state, $node, $inline = FALSE) {
+  global $user;
+
+  if ($inline == TRUE) {
+    $form['invite'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Invite people to this @type', array('@type' => $node->type)),
+      '#description' => '',
+      '#collapsed' => TRUE,
+      '#collapsible' => TRUE,
+    );
+
+  }
+
+  if (variable_get('node_invite_set_email', TRUE) || $user->uid == 0) {
+    $form['invite']['your_name'] = array(
+      '#title' => t('Your Name'),
+      '#type' => 'textfield',
+      '#default_value' => $user->name,
+      '#weight' => 0,
+    );
+    $form['invite']['your_email'] = array(
+      '#title' => t('Your E-mail Address'),
+      '#type' => 'textfield',
+      '#default_value' => $user->mail,
+      '#weight' => 1,
+    );
+  }
+  else {
+    $form['invite']['your_name'] = array(
+      '#type' => 'value',
+      '#value' => $user->name,
+    );
+    $form['invite']['your_email'] = array(
+      '#type' => 'value',
+      '#value' => $user->mail,
+    );
+  }
+
+  $form['invite']['personal_message'] = array(
+      '#weight' => 2,
+  );
+
+  $form['invite']['personal_message']['message'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Personal Message'),
+    '#description' => t('Your personal message is going to be HTML formatted if you are using the HTMLMail module.  In addition, the personal message can take advantage of tokens.  See Token Help below.'),
+  );
+
+  $form['invite']['csv_upload'] = array(
+    '#name' => 'files[csv_upload]',
+    '#type' => 'file',
+    '#title' => t('Upload Email Addresses'),
+    '#size' => 40,
+    '#description' => t('Select the CSV file to be imported. You can create a CSV file from Excel by choosing "Save As..." and selecting "Comma Separated Values (.csv) from the Format dropdown.'),
+    '#weight' => 3,
+  );
+
+  if (!variable_get('node_invite_disable_users', 0)) {
+    $form['invite']['users'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Users to invite'),
+      '#autocomplete_path' => 'node_invite/user_autocomplete',
+      '#description' => t('Enter the list of users you would like to invite, separated by commas'),
+      '#weight' => 4,
+    );
+  }
+
+  if (!variable_get('node_invite_disable_email', 0)) {
+    $form['invite']['emails'] = array(
+      '#title'       => t('Enter Invitation Recipients'),
+      '#type'        => 'textarea',
+      '#description' => t('One recipient per line please.  Recipients can be entered as Name|Email or just an email address.'),
+      '#weight' => 5,
+    );
+  }
+
+  $form['invite']['node'] = array(
+    '#type' => 'value',
+    '#value' => $node,
+  );
+
+  $form['invite']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Add Invites'),
+    '#weight' => 20,
+  );
+
+  return $form;
+}
+
+function node_invite_admin_send_form_validate($form, &$form_state) {
+  // validate sender
+  if (!valid_email_address($form_state['values']['your_email'])) {
+    form_set_error('your_email',  t('%email is not a valid email address', array('%email' => $form_state['values']['your_email'])));
+  }
+
+  // validate file upload
+  $validators = array('file_validate_extensions' => array('csv'));
+  $file = file_save_upload('csv_upload', $validators);
+  if ($file->filemime != 'text/csv') {
+    form_set_error('csv_upload', t('The file must be of CSV type only.'));
+  } else {
+    $form_state['values']['csv_upload'] = $file;
+  }
+
+  // validate recipients
+  $emails = explode("\n", $form_state['values']['emails']);
+  $emails = array_filter($emails);
+  foreach ($emails as $email) {
+    $split = preg_split('/\s*\|\s*/', $email);
+    if (count($split) == 2) {
+      $email = $split[1];
+    }
+    $email = trim($email);
+    if ($email != '' && !valid_email_address($email)) {
+      form_set_error('emails', t('%email is not a valid email address', array('%email' => $email)));
+    }
+  }
+
+  // Validate all users and store their uids in the 'storage' field to be used
+  // by the submit function.
+  $users = preg_split('/ *, */', $form_state['values']['users']);
+  $users = array_filter($users);
+  $form_state['storage']['users'] = array();
+  foreach ($users as $user) {
+    $query = "SELECT uid FROM {users} WHERE LOWER(name) = LOWER(:name)";
+    $uid = db_query($query, array(':name' => trim($user)));
+    if (!$uid) {
+      form_set_error('users', t('%user is not a valid username', array('%user' => $user)));
+    }
+    $form_state['storage']['users'][] = $uid;
+  }
+
+  // Has anyone been added to the invite?
+  if (empty($file) && (!count($emails) && !count($users))) {
+    form_set_error('emails', t("Please upload a csv file with people to invite or enter No one has been added to the invite."));
+  }
+}
+
+function node_invite_admin_send_form_submit($form, &$form_state) {
+  global $user;
+
+  $node = $form_state['values']['node'];
+
+  // Create the email address based invites
+  $emails_from_upload = node_invite_parse_csv($form_state['values']['csv_upload']);
+  $emails_from_form = explode("\n", $form_state['values']['emails']);
+  $emails = array_merge($emails_from_upload, $emails_from_form);
+  $emails = array_unique($emails);
+
+  // Remove any empty items
+  $emails = array_filter($emails);
+
+  $new_count = 0;
+  $updated_count = 0;
+  $invites = array();
+  if (is_array($emails)) {
+    foreach ($emails as $email) {
+      $split = preg_split('/\s*\|\s*/', $email);
+      $recip_name = $email; // Set name = email unless a name is set
+      $recip_mail = $email;
+      if (count($split) > 1) {
+        $email = trim($split[0]) . ' <'. trim($split[4]) . '>';
+        $recip_name = $split[0];
+        $recip_company = $split[1];
+        $recip_title = $split[2];
+        $recip_phone_number = $split[3];
+        $recip_mail = $split[4];
+      }
+      $email = trim($email);
+
+      // Save the invite
+      $account = user_load(array('mail' => $recip_mail));
+      $params = array(
+        'nid' => $node->nid,
+        'email_invitee' => $recip_mail,
+        'name_invitee' => $recip_name,
+        'company_invitee' => $recip_company,
+        'title_invitee' => $recip_title,
+        'phone_number_invitee' => $recip_phone_number,
+        'uid_invitee' => $account ? $account->uid : 0,
+        'uid_inviter' => $user->uid,
+        'status' => NODE_INVITE_PENDING,
+        'sent' => null,
+        'inviter_custom_name' => $form_state['values']['your_name'],
+        'inviter_custom_email' => $form_state['values']['your_email'],
+        'personal_message' => $form_state['values']['message'],
+      );
+      $invite= node_invite_add($recip_mail, $params);
+
+      // Check to see if the invite is new or existing
+      if ($invite->new) {
+        $new_count++;
+      } else {
+        $updated_count++;
+      }
+    }
+  }
+
+  // Create the user account based invites
+  if (is_array($form_state['storage']['users'])) {
+    foreach ($form_state['storage']['users'] as $uid) {
+      $account = user_load($uid);
+      $params = array(
+        'nid' => $node->nid,
+        'email_invitee' => $account->mail,
+        'name_invitee' => $account->name,
+        'uid_invitee' => $account->uid,
+        'uid_inviter' => $user->uid,
+        'status' => NODE_INVITE_NEW,
+        'sent' => null,
+        'inviter_custom_name' => $form_state['values']['your_name'],
+        'inviter_custom_email' => $form_state['values']['your_email'],
+        'personal_message' => $form_state['values']['message'],
+      );
+      $invites[] = node_invite_add($account->mail, $params);
+    }
+  }
+
+  // Send out the emails
+  $send_count = 0;
+  foreach ($invites as $invite) {
+    // Set the tokens to be replaced in the email.
+    node_invite_specific_info($invite, $node);
+    if (variable_get('node_invite_set_email', TRUE) || $user->uid == 0) {
+      $node->invite_specific_info['inviter-name'] = $form_state['values']['your_name'];
+      $node->invite_specific_info['inviter-mail'] = $form_state['values']['your_email'];
+    }
+
+    // Send the invite
+    node_invite_send_mail($invite, $node);
+    $send_count++;
+  }
+
+  if ($new_count > 0) {
+    drupal_set_message($new_count . ' invitations were added.');
+  }
+  if ($updated_count > 0) {
+    drupal_set_message($new_count . ' invitations were updated.');
+  }
+
+  unset($form_state['storage']);
+
+  // send them somewhere... back to the node!
+  $form_state['redirect'] = "node/" . $node->nid;
+}
+
+/**
+ * Implementation of hook_form_alter().
+ *
+ * Inserts the node_invite form element into node add/edit forms
+ */
+function node_invite_form_alter(&$form, &$form_state, $form_id) {
+  $matches = array();
+  if (preg_match("/(.+)_node_form$/", $form_id, $matches) && _node_invite_type_is_allowed($matches[1])) {
+
+    $node = $form['#node'];
+    $enabled = _ni_node_is_enabled($node);
+
+    // grab the default message/subject (if they exist)
+    // only if node isn't new (DUH)
+    $node_invite_subject = $node_invite_message = '';
+    if (isset($node->nid)) {
+      $query = db_query("SELECT * FROM {node_invite_settings} WHERE nid = :nid", array(':nid' => $node->nid))->fetch();
+      if ($query) {
+        $node_invite_subject = $query->subject;
+        $node_invite_message = $query->message;
+        $node_invite_open = $query->open;
+      }
+    }
+
+    // add a form element to override
+    $form['node_invite_group'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Node Invite'),
+      '#collapsed' => TRUE,
+      '#collapsible' => TRUE,
+      '#description' => t('Set the invite settings for this node.'),
+    );
+    $form['node_invite_group']['node_invites_enabled'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Enable invites on this node'),
+      '#default_value' => $enabled,
+    );
+    $form['node_invite_group']['node_invites_open'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Allow anyone with permission to RSVP'),
+      '#description' => t('Leaving this unchecked will mean that only users who have been explicitly invited will be able to rsvp.'),
+      '#default_value' => $node_invite_open,
+    );
+    $form['node_invite_group']['node_invite_subject_override'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Override default subject?'),
+      '#description' => t('Leave this textarea BLANK to use the site-default invite subject.'),
+      '#default_value' => $node_invite_subject,
+    );
+    $form['node_invite_group']['node_invite_message_override'] = array(
+      '#type' => 'textarea',
+      '#title' => t('Override default message?'),
+      '#description' => t('Leave this textarea BLANK to use the site-default invite message.'),
+      '#default_value' => $node_invite_message,
+    );
+    $form['node_invite_group']['node_invite_token_wrapper'] = array(
+      '#type' => 'fieldset',
+      '#description' => theme('token_tree', array('token_types' => array('node_invite', 'node', 'user'))),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+      '#title' => t('Available Tokens'),
+    );
+  }
+}
+
+/**
+ * Implementation of hook_form_alter().
+ *
+ * Inserts the node_invite form element into node add/edit forms
+ */
+function node_invite_form_views_form_invites_page_alter(&$form, &$form_state) {
+  // Check the action customize the message
+  switch ($form_state['values']['operation']) {
+    case 'action::node_invite_admin_send':
+      // List out the invites the user has chosen to send
+      $invites = array();
+      if (!empty($form_state['selection'])) {
+        foreach($form_state['selection'] as $key => $selected_invite) {
+          $invites[] = $form_state['build_info']['args'][0]->result[$key];
+        }
+
+        if (count($invites) > 0) {
+          $selected_invites = array();
+          foreach($invites as $invite) {
+            $selected_invites[] = $invite->node_invites_name_invitee . ' (' . $invite->node_invites_email_invitee . ')';
+          }
+          $form['description']['#markup'] = '<div class="item-list"><h3>You selected to send invites to the following <strong>people</strong>:</h3>' . theme('item_list', array('items' => $selected_invites, 'type' => 'ul')) . '</div>';
+        }
+      }
+      break;
+    case 'action::node_invite_admin_revoke':
+      // List out the invites the user has chosen to revoke
+      $invites = array();
+      if (!empty($form_state['selection'])) {
+        foreach($form_state['selection'] as $key => $selected_invite) {
+          $invites[] = $form_state['build_info']['args'][0]->result[$key];
+        }
+
+        if (count($invites) > 0) {
+          $deleted_invites = array();
+          $sent_invites = array();
+          foreach($invites as $invite) {
+            $selected_invites[] = $invite->node_invites_name_invitee . ' (' . $invite->node_invites_email_invitee . ')';
+          }
+          $form['description']['#markup'] = null;
+          if (count($selected_invites) > 0) {
+            $form['description']['#markup'] = '<div class="item-list"><h3>You selected to revoke the following <strong>invites</strong>:</h3>' . theme('item_list', array('items' => $selected_invites, 'type' => 'ul')) . '</div>';
+          }
+        }
+      }
+      break;
+    case 'action::node_invite_admin_delete':
+      // List out the invites the user has chosen to delete
+      $invites = array();
+      if (!empty($form_state['selection'])) {
+        foreach($form_state['selection'] as $key => $selected_invite) {
+          $invites[] = $form_state['build_info']['args'][0]->result[$key];
+        }
+
+        if (count($invites) > 0) {
+          $deleted_invites = array();
+          $sent_invites = array();
+          foreach($invites as $invite) {
+            if ($invite->node_invites_sent) {
+              $sent_invites[] = $invite->node_invites_name_invitee . ' (' . $invite->node_invites_email_invitee . ')';
+            } else {
+              $deleted_invites[] = $invite->node_invites_name_invitee . ' (' . $invite->node_invites_email_invitee . ')';
+            }
+          }
+          $form['description']['#markup'] = null;
+          if (count($deleted_invites) > 0) {
+            $form['description']['#markup'] = '<div class="item-list"><h3>You selected to delete the following <strong>invites</strong>:</h3>' . theme('item_list', array('items' => $deleted_invites, 'type' => 'ul')) . '</div>';
+          }
+          if (count($sent_invites) > 0) {
+            $form['description']['#markup'] .= '<div class="item-list"><h3>The following invite(s) cannot be deleted because the invite(s) have already been sent.&nbsp;&nbsp;Please choose to revoke the invite(s) instead.</h3>' . theme('item_list', array('items' => $sent_invites, 'type' => 'ul')) . '</div>';
+          }
+        }
+      }
+      break;
+  }
+  return $form;
+}
+
+/**
+ * Add or update the given invite.
+ *
+ * @TODO: We need a hook here for 3rd party module integration
+ */
+function node_invite_add($email_invitee, $params = array()) {
+  $ni_fields = array('iid', 'nid', 'uid_inviter', 'inviter_custom_name', 'inviter_custom_email', 'email_invitee', 'name_invitee', 'company_invitee', 'title_invitee', 'phone_number_invitee', 'uid_invitee', 'status', 'sent', 'acted_upon', 'notes_invitee', 'notes_inviter', 'hash', 'personal_message');
+  $filtered_params = array_intersect_key($params, array_flip($ni_fields));
+
+  $hash = md5($params['email_invitee'] . $sent);
+  $insert_params = array(
+    'hash' => $hash,
+  );
+
+  $query = db_merge('node_invites')
+    ->key(array('email_invitee' => $email_invitee))
+    ->fields($filtered_params)
+    ->insertFields(array_merge($filtered_params, $insert_params));
+  $success = $query->execute();
+  if (!$success) {
+    return FALSE;
+  } else if ($success == MergeQuery::STATUS_INSERT) {
+    $last_invite_id = db_query("SELECT MAX(iid) FROM {node_invites}")->fetchField();
+    $invite = node_invite_load($last_invite_id);
+    $invite->new = true;
+  } else {
+    $invite_id = db_query("SELECT iid FROM {node_invites} WHERE email_invitee = '%s'", array($email_invitee))->fetchField();
+    $invite = node_invite_load($invite_id, TRUE);
+    $invite->new = false;
+  }
+
+  return $invite;
+}
+
+/**
+ * Save or update the given invite.
+ *
+ * @TODO: We need a hook here for 3rd party module integration
+ */
+function node_invite_save($invite, $params = array()) {
+  $ni_fields = array('iid', 'nid', 'uid_inviter', 'inviter_custom_name', 'inviter_custom_email', 'email_invitee', 'name_invitee', 'company_invitee', 'title_invitee', 'phone_number_invitee',  'uid_invitee', 'status', 'sent', 'acted_upon', 'notes_invitee', 'notes_inviter', 'hash', 'personal_message');
+  $filtered_params = array_intersect_key($params, array_flip($ni_fields));
+
+  if (is_object($invite) && $invite->iid) {
+    $insert_params = array();
+  } else {
+    $sent = REQUEST_TIME;
+    $hash = md5($params['email_invitee'] . $sent);
+    $insert_params = array(
+     'sent' => $sent,
+     'hash' => $hash,
+    );
+
+    //We're likely adding a new invite from the register page,
+    //which are automatically set to Yes. So let's set the current time
+    //for the RSVP date.
+    if (strtolower($filtered_params['status']) == 'yes') {
+    	$filtered_params['status'] = 'Registered';
+    	$acted_upon = REQUEST_TIME;
+    	$insert_params['acted_upon'] = $acted_upon;
+    }
+  }
+
+  $query = db_merge('node_invites')
+    ->key(array('iid' => $invite->iid))
+    ->fields($filtered_params)
+    ->insertFields(array_merge($filtered_params, $insert_params));
+  $success = $query->execute();
+  if (!$success) {
+    return FALSE;
+  } else if ($success == MergeQuery::STATUS_INSERT) {
+    $last_invite_id = db_query("SELECT MAX(iid) FROM {node_invites}")->fetchField();
+    $invite = node_invite_load($last_invite_id);
+  } else {
+    $invite = node_invite_load($invite->iid, TRUE);
+  }
+
+  return $invite;
+}
+
+/**
+ * Return a list of all invites associated with the given node.
+ */
+function node_invite_load_invites_by_nid($nid, $status = NULL) {
+
+  $status = $status == NODE_INVITE_ANY ? NULL : $status;
+
+  $sql = db_select('node_invites', 'ni');
+  $sql->join('users', 'u', 'ni.uid_inviter = u.uid');
+  $sql->fields('ni');
+  $sql->addField('u', 'mail');
+  $sql->condition('ni.nid', $nid);
+
+  if ($status && is_array($status)) {
+    $sql->condition('ni.status', $status ,'IN');
+  } elseif ($status) {
+    $sql->condition('ni.status', $status);
+  }
+
+  $result = $sql->execute();
+  $invites = array();
+  foreach ($result as $invite) {
+    $invites[$invite->iid] = $invite;
+  }
+  return $invites;
+}
+
+/**
+ * Attaches invite specific info onto a node.
+ */
+function node_invite_specific_info($invite, &$node) {
+  $account = user_load($invite->uid_inviter);
+  $name = (!empty($invite->name_invitee)) ? $invite->name_invitee : $invite->email_invitee;
+  $node->invite_specific_info = array(
+    'node-invite-iid' => $invite->iid,
+    'node-invite-hash' => $invite->hash,
+    'node-invite-recip-name' => $name,
+    'node-invite-recip-mail' => $invite->email_invitee,
+    'node-invite-recip-company' => (!empty($invite->company_invitee)) ? $invite->company_invitee : '',
+    'node-invite-recip-title' => (!empty($invite->title_invitee)) ? $invite->title_invitee : '',
+    'node-invite-recip-phone-number' => (!empty($invite->phone_number_invitee)) ? $invite->phone_number_invitee : '',
+    'node-invite-recip-uid'  => $invite->uid_invitee,
+    'inviter-name' => $account->name,
+    'inviter-mail' => $account->mail,
+    'node-invite-personal-message' => $invite->personal_message,
+    'node-invite-status' => $invite->status,
+  );
+}
+
+
+/**
+ * Action that revokes the invite(s).
+ *
+ * @param object $entity
+ *   An optional invite object, which will be added as $context['invite'] if
+ *   provided.
+ * @param array $context
+ *   Array with the following elements:
+ *   - 'rows': Invites. This will be interated and the invites revoked.
+ *   - Other elements are used by the system as part of the action.
+ *
+ * @ingroup actions
+ */
+function node_invite_admin_revoke($entity, $context) {
+  if (!isset($entity)) {
+    return;
+  }
+
+  if (!isset($context) || count($context['rows']) == 0) {
+    return;
+  }
+
+  foreach ($entity as $node) {
+    $invite_rows = $context['rows'];
+
+    foreach ($invite_rows as $invite_row) {
+      $invite = node_invite_load($invite_row->iid);
+
+      if ($node & $invite) {
+        node_invite_save($invite, array('status' => NODE_INVITE_REVOKED));
+      }
+    }
+  }
+}
+
+
+/**
+ * Action that deletes the invite(s).
+ *
+ * @param object $entity
+ *   An optional invite object, which will be added as $context['invite'] if
+ *   provided.
+ * @param array $context
+ *   Array with the following elements:
+ *   - 'rows': Invites. This will be interated and deleted only if they have not been sent.
+ *   - Other elements are used by the system as part of the action.
+ *
+ * @ingroup actions
+ */
+function node_invite_admin_delete($entity, $context) {
+  if (!isset($entity)) {
+    return;
+  }
+
+  if (!isset($context) || count($context['rows']) == 0) {
+    return;
+  }
+
+  foreach ($entity as $node) {
+    $invite_rows = $context['rows'];
+
+    foreach ($invite_rows as $invite_row) {
+      $invite = node_invite_load($invite_row->iid);
+
+      if ($node & $invite) {
+        if ($invite->status != NODE_INVITE_PENDING) {
+          drupal_set_message('The invite to @name (@email) could not be deleted because it has already been sent.', array('@name' => $invite->name_invitee, '@email' => $invite->email_invitee));
+        } else {
+          $query = db_delete('node_invites')
+            ->condition('iid', $invite->iid)
+            ->execute();
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Action that sends out the invite(s).
+ *
+ * @param object $entity
+ *   An optional invite object, which will be added as $context['invite'] if
+ *   provided.
+ * @param array $context
+ *   Array with the following elements:
+ *   - 'rows': Invites. This will be interated and passed to the node_invite_send_email function.
+ *   - Other elements are used by the system as part of the action.
+ *
+ */
+function node_invite_admin_send($entity, $context) {
+  if (!isset($entity)) {
+    return;
+  }
+
+  if (!isset($context) || count($context['rows']) == 0) {
+    return;
+  }
+
+  foreach ($entity as $node) {
+    $invite_rows = $context['rows'];
+
+    foreach ($invite_rows as $invite_row) {
+      $invite = node_invite_load($invite_row->iid);
+
+      if ($node && $invite) {
+        node_invite_specific_info($invite, $node);
+        if (variable_get('node_invite_set_email', TRUE) || $user->uid == 0) {
+          $node->invite_specific_info['inviter-name'] = $invite->inviter_custom_name;
+          $node->invite_specific_info['inviter-mail'] = $invite->inviter_custom_email;
+        }
+
+        // Send the invite
+        node_invite_send_mail($invite, $node);
+
+        // Update the invite status for pending invites
+        if ($invite->status == NODE_INVITE_PENDING) {
+          node_invite_save($invite, array('status' => NODE_INVITE_SENT, 'sent' => REQUEST_TIME));
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Mail out the invite.
+ *
+ * @param $invite - The invite to send out.
+ * @param $node - The node object with node_invite_specific_info() already
+ *   having been executed on it.
+ * @param $token_flush - This is needed if sending multiple invites in a
+ *   single page load (i.e. on the invite send page) as the token's can't
+ *   be cached in that case or everyone's emails will say the same thing
+ *   even if a name or email token is used.
+ *
+ * @return the value of drupal_mail().
+ */
+function node_invite_send_mail($invite, $node, $token_flush = FALSE) {
+  module_load_include('inc', 'node_invite', 'node_invite.settings');
+  $message = variable_get('node_invite_message_default', NODE_INVITE_MESSAGE_DEFAULT);
+  if (isset($invite->settings['message']) && !empty($invite->settings['message'])) {
+    $message = $invite->settings['message'];
+  }
+
+  $rsvp_url = url(node_invite_rsvp_path($invite), array('absolute' => TRUE));
+  $image_url = file_create_url($node->field_content_image['und'][0]['uri']);
+  $message = str_replace("[node_invite:inviter-rsvp-url]", $rsvp_url, $message);
+  if ($token_flush) {
+    $message = token_replace($message, array('node' => $node, 'node_invite' => $node), array('clear' => TRUE));
+  }
+  else {
+    $message = token_replace($message, array('node' => $node, 'node_invite' => $node));
+  }
+  // Since the parsed message can contain the "personal message" which can also
+  // contain tokens, so we need to run a token_replace twice.
+  $message = token_replace($message, array('node' => $node));
+
+  $subject = variable_get('node_invite_subject_default', NODE_INVITE_SUBJECT_DEFAULT);
+  if (isset($invite->settings['subject']) && !empty($invite->settings['subject'])) {
+    $subject = $invite->settings['subject'];
+  }
+  $subject = token_replace($subject, array('node' => $node));
+
+  $from_string = _ni_format_from_address($invite);
+
+  $params = array(
+    'subject' => $subject,
+    'body'    => $message,
+    'from'    => _ni_format_from_address($invite, TRUE),
+  );
+
+  if (module_exists('pet')) {
+  	//We need to jump ahead and load the body of the PET so that we can do a proper replacement on the RSVP URL token.
+  	$pet = pet_load('example_invite_email_template', array(), TRUE);
+  	//$rsvp_url has been set above
+  	$pet_message = null;
+  	$pet_message = str_replace("[node_invite:inviter-rsvp-url]", $rsvp_url, $pet->mail_body);
+  	$pet_message = str_replace("[node:field_content_image]", $image_url, $pet_message);
+  	$pet_message = str_replace("[node:title]", $node->title, $pet_message);
+  	watchdog('node_invite', 'RSVP Url is: @rsvp_url, PET Message is !pet_msg, Email address is !email, PET Mail Body is !pet_mail_body', array('@rsvp_url' => $rsvp_url, '!pet_msg' => $pet_message, "!email" => $invite->email_invitee, "!pet_mail_body" => $pet->mail_body));
+
+  	$params = array(
+	    'subject' => $subject,
+	    'body'    => $pet_message,
+	    //'from'    => _ni_format_from_address($invite, TRUE),
+	    'from' => 'Example Inc. <no-reply@example.com>',
+	  );
+
+  	$msg = drupal_mail(
+      'node_invite',           // module
+      'invite',                // key
+      $invite->email_invitee,  // to
+      language_default(),      // language
+      $params,                 // params
+      $from_string,            // from
+      TRUE                     // send
+    );
+  } else {
+	  $msg = drupal_mail(
+	    'node_invite',           // module
+	    'invite',                // key
+	    $invite->email_invitee,  // to
+	    language_default(),      // language
+	    $params,                 // params
+	    $from_string,            // from
+	    TRUE                     // send
+	  );
+
+	  if ($msg) {
+	    watchdog('node_invite', 'Invite sent to: !email', array('!email' => check_plain($invite->email_invitee)));
+	  }
+	  else {
+	    watchdog('node_invite', 'Unable to send invite to: !email', array('!email' => check_plain($invite->email_invitee)), WATCHDOG_ERROR);
+	  }
+
+	  return $msg;
+  }
+}
+
+/**
+ * Returns a formatted email address to send the message from.
+ */
+function _ni_format_from_address($invite, $default = FALSE) {
+  // Format the from address
+  $from_name = $invite->name;
+  if ($invite->inviter_custom_name) {
+    $from_name = $invite->inviter_custom_name;
+  }
+
+  // Use the default from address?
+  if ($default && $from = variable_get('node_invite_default_from', FALSE)) {
+    $from_email = $from;
+  }
+  else {
+    $from_email = $invite->mail;
+    if ($invite->inviter_custom_email) {
+      $from_email = $invite->inviter_custom_email;
+    }
+  }
+
+  $from_string = $from_email;
+  if (!empty($from_name)) {
+    $from_string = '"' . check_plain($from_name) . '" <' . $from_email . '>';
+  }
+  return $from_string;
+}
+
+function _ni_format_to_address($invite) {
+  if ($invite->uid_invitee) {
+    $user = user_load($invite->uid_invitee);
+    $to_email = $user->mail;
+    $to_name = $user->name;
+  }
+  else {
+    $to_email = $invite->email_invitee;
+    $to_name = $invite->name_invitee;
+  }
+
+  $to_string = $to_email;
+  if (!empty($to_name) && $to_name != $to_email) {
+    $to_string = check_plain($to_name) . ' <' . $to_email . '>';
+  }
+  return $to_string;
+}
+
+/*** Theme functions ***/
+function theme_node_invite_view_field_invitees($variables) {
+  $nid = $variables['nid'];
+  $invites = $variables['invites'];
+
+  $items = array();
+  foreach ($invites as $iid => $invite) {
+    if ($invite->uid_invitee) {
+      $account = user_load($invite->uid_invitee);
+      $items[] = $account->mail;
+    }
+    else {
+      $items[] = $invite->email_invitee;
+    }
+  }
+
+  if (empty($invites)) {
+    return t('No one has been invited to this event');
+  }
+  else {
+    return theme('item_list', array('items' => $items));
+  }
+}
+
+function theme_node_invite_list_invites($variables) {
+  $query = $variables['query'];
+  $fields = $variables['fields'];
+  if (!empty($variables['limit'])) {
+    $limit = $variables['limit'];
+  } else {
+    $limit = 50;
+  }
+
+  global $user;
+
+  // Setup the table headers
+  $header = array();
+  foreach ($fields as $field => $title) {
+    $header[] = array('data' => $title, 'field' => $field);
+  }
+  $header[] = array('data' => t('Actions'));
+
+  if (isset($account)) {
+    // Remove the 'Sent by' field, since it's redundant in this case
+    unset($header[2]);
+    $header = array_filter($header);
+  }
+  if (isset($node)) {
+    // Remove the 'What' field, since it's redundant in this case
+    unset($header[0]);
+    $header = array_filter($header);
+  }
+
+  // Execute the query and build the table row data
+  $query = $query->orderByHeader($header);
+  $result = $query->execute();
+
+  // Create a list of display fields without the table part
+  $display_fields = array();
+  foreach ($fields as $field => $value) {
+    if (($index = strrpos($field, '.')) !== FALSE) {
+      $display_fields[] = substr($field, strrpos($field, '.') + 1);
+    }
+    else {
+      $display_fields[] = $field;
+    }
+  }
+
+  $destination = drupal_get_destination();
+  $rows = array();
+  foreach ($result as $row) {
+    $actions = array();
+    if (user_access('manage all invites') || (user_access('manage own invites') && $row->uid_inviter == $user->uid)) {
+      if (!in_array($row->status, array(NODE_INVITE_RESPONSE_YES, NODE_INVITE_REVOKED))) {
+        $actions[] = l(t('Revoke'), 'node_invite/revoke/' . $row->iid, array('query' => $destination));
+        $actions[] = l(t('Resend'), 'node_invite/resend/' . $row->iid, array('query' => $destination));
+      }
+      if ($row->status == NODE_INVITE_REVOKED) {
+        $actions[] = l(t('Reinstate'), 'node_invite/reinstate/' . $row->iid, array('query' => $destination));
+      }
+      if (!in_array($row->status, array(NODE_INVITE_NEW, NODE_INVITE_REVOKED))) {
+        $title = $row->notes_invitee ? t('View (comment)') : t('View');
+        $actions[] = l($title, 'node_invite/view/' . $row->iid, array('query' => $destination));
+      }
+
+      $url = node_invite_rsvp_path($row->iid);
+      $actions[] = l(t('Edit'), $url, array('query' => $destination));
+    }
+    $actions = implode(' ', $actions);
+    $actions = empty($actions) ? t('N/A') : $actions;
+
+    $current_row = array();
+    foreach ((array)$row as $field => $value) {
+      // Don't display non-display fields
+      if (!in_array($field, $display_fields)) continue;
+      // Format the date fields
+      if (in_array($field, array('sent', 'acted_upon'))) {
+        if (!$value) {
+          $value = t('Never');
+        }
+        else {
+          $value = format_date($value, 'small');
+        }
+      }
+      $current_row[] = $value;
+    }
+    $current_row[] = $actions;
+    $rows[] = $current_row;
+  }
+
+  if (!$rows) {
+    return theme('node_invite_list_invites_empty');
+  }
+
+  return theme('table', array('header' => $header, 'rows' => $rows), array('class' => 'manage-invites')) . theme('pager');
+}
+
+function theme_node_invite_list_invites_empty() {
+  return '<div class="invite-table-empty">' . t('No invites have been sent yet') . '</div>';
+}
+
+function theme_node_invite_view($variables) {
+  $invite = $variables['invite'];
+
+  if ($invite->uid_invitee) {
+    $user = user_load($invite->uid_invitee);
+    $name = theme('username', array('account' => $user));
+  }
+  elseif (!empty($invite->name_invitee)) {
+    $name = $invite->name_invitee;
+  }
+  else {
+    $name = $invite->email_invitee;
+  }
+
+  drupal_set_title(t('Viewing invitation for @name', array('@name' => $name)));
+
+  $output = array();
+  $output[] = t('Response: !response', array('!response' => $invite->status));
+  $output[] = t('Sent: !date', array('!date' => format_date($invite->sent)));
+  $output[] = t('Updated: !date', array('!date' => format_date($invite->acted_upon)));
+  $output[] = t('Comment: !notes', array('!notes' => $invite->notes_invitee));
+
+  $output = theme_item_list(array('items' => $output));
+
+  $link = !empty($_GET['destination']) ? $_GET['destination'] : 'node/' . $invite->nid . '/manage_invites';
+  $output .= l(t('Back'), $link);
+
+  return $output;
+}
+
+/*** Node Invite Helper Functions ***/
+
+/**
+ * Return TRUE if node_invites is enabled on the given nid.
+ * @param $node - The node to check whether invites are enabled
+ */
+function _ni_node_is_enabled($node) {
+  // First confirm that invites are allowed on this node type
+  if (!_node_invite_type_is_allowed($node->type)) {
+    return FALSE;
+  }
+
+  $enabled = variable_get('node_invite_default', NODE_INVITE_DEFAULT_FOR_ENABLED_NODES);
+
+  // Test to see if the invite status has been explicitly set on this node.
+  $sth = db_query("SELECT invites_enabled FROM {node_invite_settings} WHERE nid = :nid", array(':nid' => $node->nid));
+  foreach ($sth->fetchAssoc() as $row) {
+    $enabled = $row['invites_enabled'];
+  }
+
+  return $enabled;
+}
+
+/**
+ * Whether node_invite can be used with the specified node type.
+ *
+ * @param $type - The node type in question
+ * @return TRUE if node_invite can be used with the given type.
+ */
+function _node_invite_type_is_allowed($type) {
+  return in_array($type, variable_get('node_invite_node_types', array()), TRUE);
+}
+
+/**
+ * Return the path for the RSVP page for the specified invite.
+ */
+function node_invite_rsvp_path($invite) {
+  if (!is_object($invite)) {
+    $invite = node_invite_load($invite);
+  }
+
+  $url = 'node_invite/rsvp/' . $invite->nid . '/';
+  $url .= variable_get('node_invite_hash_urls', FALSE) ? $invite->hash : $invite->iid;
+
+  return $url;
+}
+
+/**
+ * Function to retrieve a list of users based on the given string.
+ * This is a slight modification of the user_autocomplete() function as we
+ * want to allow the user to enter a comma separated list of users instead of
+ * just a single user.
+ *
+ * @param $string - A list of usernames separated by comma's
+ * @return an array containing a list of matching users.
+ */
+function _node_invite_user_autocomplete($string = '') {
+  $usernames = preg_split('/ *, */', $string);
+  // Only try and match on the last username in the list
+  $username = array_pop($usernames);
+  $string = implode(', ', $usernames);
+  $limit = variable_get('node_invite_user_limit', 10);
+
+  $matches = array();
+  if ($username && variable_get('node_invite_userreference', FALSE) && module_exists('userreference')) {
+    $settings = array(
+      'referenceable_roles' => variable_get('node_invite_referenceable_roles', array()),
+      'referenceable_status' => variable_get('node_invite_referenceable_status', ''),
+      'advanced_view' => variable_get('node_invite_advanced_view', NULL),
+      'advanced_view_args' => variable_get('node_invite_advanced_view_args', ''),
+    );
+    $results = FALSE;
+
+    if (!empty($settings['advanced_view'])) {
+      $results = _userreference_potential_references_views($settings, $username, 'contains', array(), $limit);
+    }
+    if (!$results) {
+      $results = _userreference_potential_references_standard($settings, $username, 'contains', array(), $limit);
+    }
+
+    foreach ($results as $result) {
+      $key = $string ? $string . ', ' . $result['title'] : $result['title'];
+      $matches[$key] = '<div class="reference-autocomplete">' . $result['rendered'] . '</div>';
+    }
+  }
+  elseif ($username) {
+    // Userreference selection is not enabled, so fall back to the default
+    if (count($usernames)) {
+      // Filter out all users who have already been selected
+      $not_in = "AND LOWER(name) NOT IN (" . implode(', ', array_fill(0, count($usernames), "LOWER(:values)")) . ")";
+    }
+    $values = array_merge(array($username), $usernames);
+    $result = db_query_range("SELECT name FROM {users} WHERE LOWER(name) LIKE LOWER(':values%%') $not_in", 0, $limit, array(':values' => $values));
+    foreach ($result as $user) {
+      $key = $string ? $string . ', ' . $user->name : $user->name;
+      $matches[$key] = check_plain($user->name);
+    }
+  }
+
+  drupal_json_output($matches);
+}
+
+/**
+ * Return a list of invites for the specified uid or email address. If the uid
+ * is set then the email address parameter will be ignored.
+ */
+function node_invite_user_invites($uid = NULL, $email = NULL) {
+  $invites = array();
+  if ($uid) {
+    $query = "SELECT * FROM node_invites WHERE uid_invitee = :invitee_id";
+    $param = array(':invitee_id' => $uid);
+  }
+  elseif ($email) {
+    $query = "SELECT * FROM node_invites WHERE email_invitee = :email_address";
+    $param = array(':email_address' => $email);
+  }
+  if ($query) {
+    $result = db_query($query, $param);
+    foreach ($result as $invite) {
+      $invites[$invite->iid] = $invite;
+    }
+  }
+
+  return $invites;
+}
+
+/**
+ * Implementation of hook_menu_local_tasks_alter().
+ * @see http://api.drupal.org/api/drupal/modules!system!system.api.php/function/hook_menu_local_tasks_alter/7
+ */
+function node_invite_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+  if (isset($data['tabs'][0]['output'][2]) && $data['tabs'][0]['output'][2]['#link']['path'] == 'node/%/invites') {
+    $allowed = node_invite_manage_invites_access($router_item['map'][1]);
+    if (!$allowed) {
+    	unset($data['tabs'][0]['output'][2]);
+    }
+  }
+}
